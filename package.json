@@ -1,0 +1,72 @@
+{
+  "name": "scriptivox",
+  "version": "0.1.0",
+  "description": "Official Node.js and TypeScript SDK for the Scriptivox transcription API: upload, transcribe, wait, export SRT/VTT/text, list, and verify webhooks. Zero runtime dependencies.",
+  "keywords": [
+    "scriptivox",
+    "transcription",
+    "speech-to-text",
+    "asr",
+    "subtitles",
+    "srt",
+    "vtt",
+    "diarization",
+    "sdk",
+    "api"
+  ],
+  "license": "MIT",
+  "author": "Scriptivox <support@scriptivox.com>",
+  "homepage": "https://platform.scriptivox.com/docs/quickstart",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SparkleOfficial/scriptivox-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SparkleOfficial/scriptivox-node/issues",
+    "email": "support@scriptivox.com"
+  },
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "generate:check": "node scripts/generate.mjs --check",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && node --test test/unit.test.mjs test/webhooks.test.mjs && tsc -p tsconfig.test.json",
+    "test:integration": "npm run build && node --test --test-concurrency=1 test/integration.test.mjs",
+    "prepublishOnly": "npm run generate:check && npm test",
+    "test:types": "npm run build && tsc -p tsconfig.test.json"
+  },
+  "devDependencies": {
+    "@types/node": "18.19.130",
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

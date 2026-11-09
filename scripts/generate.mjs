@@ -1,0 +1,207 @@
+#!/usr/bin/env node
+/**
+ * Generates the SDK's types and error classes from the Scriptivox OpenAPI document.
+ *
+ *   node scripts/generate.mjs                 regenerate from the snapshot in openapi/openapi.json
+ *   node scripts/generate.mjs --fetch [url]   refresh the snapshot first (default: the published document)
+ *   node scripts/generate.mjs --spec <file>   refresh the snapshot from a local file first
+ *   node scripts/generate.mjs --check         fail if the generated files differ from the snapshot's output
+ *   node scripts/generate.mjs --check-live    fail if the snapshot differs from the published document
+ *
+ * Outputs (never edit them by hand):
+ *   src/generated/openapi.ts   every path, operation and schema, via openapi-typescript
+ *   src/generated/errors.ts    one class per error.code, the async failure codes, the HTTP status per code
+ *
+ * The helpers (client, upload, wait, list, webhooks) are hand-written and only import from here.
+ */
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import openapiTS, { astToString } from 'openapi-typescript';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SNAPSHOT = join(ROOT, 'openapi', 'openapi.json');
+const PUBLISHED = 'https://platform.scriptivox.com/openapi.json';
+const OUT_TYPES = join(ROOT, 'src', 'generated', 'openapi.ts');
+const OUT_ERRORS = join(ROOT, 'src', 'generated', 'errors.ts');
+
+/** Category classes written by hand in src/errors.ts, by HTTP status. */
+const CATEGORY_BY_STATUS = {
+  400: 'BadRequestError',
+  401: 'AuthenticationError',
+  402: 'PaymentRequiredError',
+  403: 'PermissionDeniedError',
+  404: 'NotFoundError',
+  405: 'MethodNotAllowedError',
+  409: 'ConflictError',
+  410: 'GoneError',
+  413: 'PayloadTooLargeError',
+  415: 'UnsupportedMediaTypeError',
+  422: 'UnprocessableEntityError',
+  429: 'RateLimitError',
+  500: 'InternalServerError',
+  503: 'ServiceUnavailableError',
+};
+
+const args = process.argv.slice(2);
+const flag = (name) => args.includes(name);
+const valueAfter = (name) => {
+  const i = args.indexOf(name);
+  return i >= 0 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : undefined;
+};
+
+async function fetchSpec(url) {
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`GET ${url} answered HTTP ${res.status}`);
+  return JSON.parse(await res.text());
+}
+
+const pretty = (spec) => JSON.stringify(spec, null, 2) + '\n';
+
+/** PascalCase(code) + "Error"; a trailing _ERROR is not doubled (INTERNAL_ERROR -> InternalError). */
+export function classNameForCode(code) {
+  const words = code.toLowerCase().split('_');
+  if (words.length > 1 && words[words.length - 1] === 'error') words.pop();
+  return words.map((w) => w[0].toUpperCase() + w.slice(1)).join('') + 'Error';
+}
+
+function categoryFor(status) {
+  return CATEGORY_BY_STATUS[status] ?? (status >= 500 ? 'InternalServerError' : 'APIError');
+}
+
+function buildErrorsModule(spec, specHash) {
+  const errorProp = spec.components.schemas.Error.properties.error.properties.code;
+  const codes = errorProp.enum;
+  const statusByCode = errorProp['x-httpStatusByCode'];
+  const descriptions = errorProp['x-enumDescriptions'] ?? {};
+  const asyncProp = spec.components.schemas.TranscriptionError.properties.code;
+  const asyncCodes = asyncProp.enum;
+  const asyncDescriptions = asyncProp['x-enumDescriptions'] ?? {};
+  for (const c of codes) if (!statusByCode[c]) throw new Error(`x-httpStatusByCode has no status for ${c}`);
+
+  const categories = new Set(Object.values(CATEGORY_BY_STATUS));
+  const usedCategories = new Set();
+  const classes = [];
+  const mapping = [];
+  for (const code of codes) {
+    const status = statusByCode[code];
+    const parent = categoryFor(status);
+    usedCategories.add(parent);
+    const name = classNameForCode(code);
+    const doc = (descriptions[code] ?? '').replace(/\*\//g, '*\\/').replace(/\s+/g, ' ').trim();
+    if (categories.has(name) || name === 'APIError') {
+      // The code's own name is the category's name (NOT_FOUND, CONFLICT, ...): the category
+      // class is the class for that code too; err.code tells them apart.
+      mapping.push(`  ${code}: ${name},`);
+      usedCategories.add(name);
+      continue;
+    }
+    classes.push(
+      `/** \`${code}\` (HTTP ${status}). ${doc} */\n` +
+        `export class ${name} extends ${parent} {\n` +
+        `  declare readonly code: '${code}';\n` +
+        `}`,
+    );
+    mapping.push(`  ${code}: ${name},`);
+  }
+
+  const imports = [...usedCategories].filter((n) => n !== 'APIError').sort();
+  const asyncDoc = asyncCodes
+    .map((c) => ` *  - ${c}: ${(asyncDescriptions[c] ?? '').replace(/\*\//g, '*\\/').replace(/\s+/g, ' ').trim()}`)
+    .join('\n');
+
+  return `// GENERATED by scripts/generate.mjs from openapi/openapi.json — do not edit by hand.
+// OpenAPI ${spec.info.version} · sha256 ${specHash}
+
+import {
+  APIError,
+${imports.map((n) => `  ${n},`).join('\n')}
+} from '../errors.js';
+
+/** Every \`error.code\` a request can answer with (the API may add more; unknown codes still map by HTTP status). */
+export const API_ERROR_CODES = ${JSON.stringify(codes)} as const;
+export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
+
+/** The HTTP status each code is sent with. */
+export const HTTP_STATUS_BY_CODE: Record<ApiErrorCode, number> = ${JSON.stringify(statusByCode)};
+
+/**
+ * Codes a job can end with (\`status: "failed"\`, \`error.code\`). They never come back on the
+ * request itself: \`wait()\` throws them as TranscriptionFailedError.
+${asyncDoc}
+ */
+export const TRANSCRIPTION_ERROR_CODES = ${JSON.stringify(asyncCodes)} as const;
+export type TranscriptionErrorCode = (typeof TRANSCRIPTION_ERROR_CODES)[number];
+
+${classes.join('\n\n')}
+
+/** The class thrown for each code. */
+export const ERROR_CLASS_BY_CODE: Record<ApiErrorCode, new (init: ConstructorParameters<typeof APIError>[0]) => APIError> = {
+${mapping.join('\n')}
+};
+`;
+}
+
+async function generate(spec) {
+  const specText = pretty(spec);
+  const specHash = createHash('sha256').update(specText).digest('hex').slice(0, 16);
+  const ast = await openapiTS(spec, { alphabetize: false, exportType: false });
+  const types =
+    `// GENERATED by scripts/generate.mjs (openapi-typescript) from openapi/openapi.json — do not edit by hand.\n` +
+    `// OpenAPI ${spec.info.version} · sha256 ${specHash}\n\n` +
+    astToString(ast);
+  return { [OUT_TYPES]: types, [OUT_ERRORS]: buildErrorsModule(spec, specHash) };
+}
+
+async function main() {
+  if (flag('--check-live')) {
+    const live = pretty(await fetchSpec(valueAfter('--check-live') ?? PUBLISHED));
+    const snap = readFileSync(SNAPSHOT, 'utf8');
+    if (live !== snap) {
+      console.error(`openapi/openapi.json differs from ${valueAfter('--check-live') ?? PUBLISHED}. Run: npm run generate -- --fetch`);
+      process.exit(1);
+    }
+    console.log('snapshot matches the published OpenAPI document');
+    return;
+  }
+
+  if (flag('--fetch')) {
+    const url = valueAfter('--fetch') ?? PUBLISHED;
+    mkdirSync(dirname(SNAPSHOT), { recursive: true });
+    writeFileSync(SNAPSHOT, pretty(await fetchSpec(url)));
+    console.log(`snapshot refreshed from ${url}`);
+  } else if (valueAfter('--spec')) {
+    mkdirSync(dirname(SNAPSHOT), { recursive: true });
+    writeFileSync(SNAPSHOT, pretty(JSON.parse(readFileSync(valueAfter('--spec'), 'utf8'))));
+    console.log(`snapshot refreshed from ${valueAfter('--spec')}`);
+  }
+
+  const spec = JSON.parse(readFileSync(SNAPSHOT, 'utf8'));
+  const outputs = await generate(spec);
+
+  if (flag('--check')) {
+    const stale = Object.entries(outputs).filter(([file, text]) => {
+      try {
+        return readFileSync(file, 'utf8') !== text;
+      } catch {
+        return true;
+      }
+    });
+    if (stale.length) {
+      console.error(`stale generated files: ${stale.map(([f]) => f.slice(ROOT.length + 1)).join(', ')}. Run: npm run generate`);
+      process.exit(1);
+    }
+    console.log('generated files are up to date');
+    return;
+  }
+
+  mkdirSync(dirname(OUT_TYPES), { recursive: true });
+  for (const [file, text] of Object.entries(outputs)) writeFileSync(file, text);
+  console.log(`generated ${Object.keys(outputs).map((f) => f.slice(ROOT.length + 1)).join(', ')}`);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
