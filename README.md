@@ -28,11 +28,14 @@ console.log(done.result.full_transcript);
 
 CommonJS: `const { Scriptivox } = require('scriptivox');`
 
-From a public link (direct file links, Google Drive, Dropbox and OneDrive share links):
+From a public link (direct file links, Google Drive, Dropbox and OneDrive share links, and public TikTok, Instagram, Facebook, X and Snapchat posts):
 
 ```js
 const job = await client.transcribe({ url: 'https://example.com/podcast.mp3', diarize: true, speaker_count: 2 });
+const reel = await client.transcribe({ url: 'https://www.instagram.com/reel/C0nT3stR33l/' });
 ```
+
+A social post is checked when you send it, so that call takes a few seconds. A post that is private, deleted or has no video throws `UrlNotAccessibleError` at once (`err.error?.reason` says why, `err.error?.platform` names the site), and nothing is created or charged.
 
 Pass `language` when you know it: it is faster and more accurate than auto-detection. Omit it to auto-detect.
 
@@ -144,7 +147,7 @@ try {
 | `NotFoundError` (404): `TranscriptionNotFoundError`, `UploadNotFoundError` | Wrong id |
 | `ConflictError` (409), `IdempotencyKeyLockedError` | Not allowed in the job's current state |
 | `RateLimitError` (429): `RateLimitExceededError` | Too many requests, or too many jobs in progress |
-| `InternalServerError` (5xx), `ServiceUnavailableError` (503): `MaintenanceError` | Our side; safe to retry |
+| `InternalServerError` (5xx), `ServiceUnavailableError` (503): `MaintenanceError`, `LinkCheckUnavailableError` | Our side; safe to retry after `err.retryAfter` seconds |
 | `APIConnectionError`, `APITimeoutError` | No answer |
 | `UploadFailedError` | The file upload itself failed |
 | `TranscriptionFailedError` | `wait()`: the job ended failed |

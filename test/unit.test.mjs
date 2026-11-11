@@ -25,6 +25,9 @@ import {
   MaintenanceError,
   InternalError,
   ServiceUnavailableError,
+  BadRequestError,
+  UrlNotAccessibleError,
+  LinkCheckUnavailableError,
   TranscriptionFailedError,
   WaitTimeoutError,
   APITimeoutError,
@@ -134,6 +137,37 @@ test('a Retry-After longer than 60 s is not waited out', async () => {
   assert.equal(mock.requests.length, 1);
 });
 
+test('a social post refused at once: UrlNotAccessibleError with reason and platform, not retried', async () => {
+  mock.reply(apiError(400, 'URL_NOT_ACCESSIBLE', 'This link could not be checked. It may be private, deleted or not available in your region.', { reason: 'link_not_verifiable', platform: 'instagram' }));
+  const err = await client.transcribe({ url: 'https://www.instagram.com/p/C0nT3stPr1v/' }).catch((e) => e);
+  assert.ok(err instanceof UrlNotAccessibleError);
+  assert.ok(err instanceof BadRequestError);
+  assert.equal(err.code, 'URL_NOT_ACCESSIBLE');
+  assert.equal(err.error.reason, 'link_not_verifiable');
+  assert.equal(err.error.platform, 'instagram');
+  assert.equal(mock.requests.length, 1);
+});
+
+test('503 LINK_CHECK_UNAVAILABLE: retried after a short Retry-After with the same Idempotency-Key, thrown when it is 600 s', async () => {
+  mock.reply(
+    apiError(503, 'LINK_CHECK_UNAVAILABLE', 'This link could not be checked right now. Nothing was created or charged. Try again in a minute.', { reason: 'link_check_failed', platform: 'tiktok' }, { 'retry-after': '1' }),
+    { status: 200, body: { id: 'j1', status: 'created' } },
+  );
+  const ok = await client.transcribe({ url: 'https://www.tiktok.com/@someone/video/1' });
+  assert.equal(ok.id, 'j1');
+  assert.equal(mock.requests.length, 2);
+  assert.equal(mock.requests[0].headers['idempotency-key'], mock.requests[1].headers['idempotency-key']);
+
+  mock.reset();
+  mock.reply(apiError(503, 'LINK_CHECK_UNAVAILABLE', 'Link checks are busy right now. Please wait a few minutes and try again.', { reason: 'verify_rate_limited', platform: 'tiktok' }, { 'retry-after': '600' }));
+  const busy = await client.transcribe({ url: 'https://www.tiktok.com/@someone/video/1' }).catch((e) => e);
+  assert.ok(busy instanceof LinkCheckUnavailableError);
+  assert.ok(busy instanceof ServiceUnavailableError);
+  assert.equal(busy.retryAfter, 600);
+  assert.equal(busy.error.reason, 'verify_rate_limited');
+  assert.equal(mock.requests.length, 1);
+});
+
 test('typed errors: class per code, category per status, request id, docs url', async () => {
   mock.reply(apiError(402, 'ZERO_BALANCE', 'Balance is $0 or below. Please deposit funds before transcribing.'));
   const err = await client.transcribe({ url: 'https://example.com/a.mp3' }).catch((e) => e);
@@ -164,8 +198,8 @@ test('typed errors: class per code, category per status, request id, docs url', 
   assert.equal(eRoute.code, 'NOT_FOUND');
 });
 
-test('every code in the OpenAPI document has a class; 26 sync and 13 async codes', () => {
-  assert.equal(API_ERROR_CODES.length, 26);
+test('every code in the OpenAPI document has a class; 29 sync and 13 async codes', () => {
+  assert.equal(API_ERROR_CODES.length, 29);
   assert.equal(TRANSCRIPTION_ERROR_CODES.length, 13);
   for (const code of API_ERROR_CODES) assert.equal(typeof ERROR_CLASS_BY_CODE[code], 'function', code);
 });
