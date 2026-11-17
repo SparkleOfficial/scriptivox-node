@@ -20,6 +20,7 @@ import type {
   Transcription,
   TranscriptionCancelled,
   TranscriptionCreated,
+  TranscriptionOptions,
   TranscriptionPage,
   TranscriptionSummary,
   Upload,
@@ -122,16 +123,17 @@ export class Scriptivox {
   // ─── Transcribe ────────────────────────────────────────────────────────────
 
   /**
-   * Start a transcription from a public `url`, a local `file` (uploaded first), or an earlier
-   * `upload_id`. Resolves as soon as the job is accepted (`status: "created"`); call wait(id) next.
+   * Start a transcription from a public `url`, a local `file` (uploaded first), an earlier
+   * `upload_id`, or `source_transcription_id` (an earlier completed job, again: see transcribeAgain).
+   * Resolves as soon as the job is accepted (`status: "created"`); call wait(id) next.
    * A `url` can be a file, a Google Drive, Dropbox or OneDrive share link, or a public TikTok,
    * Instagram, Facebook, X or Snapchat post; a post that can't be transcribed throws UrlNotAccessibleError here.
    * Every call sends an Idempotency-Key, so the SDK's own retries never create a second job.
    */
   async transcribe(params: TranscribeParams, options: TranscribeOptions = {}): Promise<TranscriptionCreated> {
-    const sources = (['url', 'file', 'upload_id'] as const).filter((k) => (params as unknown as Record<string, unknown>)[k] !== undefined);
+    const sources = (['url', 'file', 'upload_id', 'source_transcription_id'] as const).filter((k) => (params as unknown as Record<string, unknown>)[k] !== undefined);
     if (sources.length !== 1) {
-      throw new TypeError('transcribe() needs exactly one of url, file or upload_id.');
+      throw new TypeError('transcribe() needs exactly one of url, file, upload_id or source_transcription_id.');
     }
     const body: Record<string, unknown> = {};
     for (const key of TRANSCRIPTION_OPTION_KEYS) {
@@ -141,6 +143,8 @@ export class Scriptivox {
       body.url = params.url;
     } else if (params.upload_id !== undefined) {
       body.upload_id = params.upload_id;
+    } else if (params.source_transcription_id !== undefined) {
+      body.source_transcription_id = params.source_transcription_id;
     } else {
       const uploaded = await this.upload(params.file as FileInput, {
         filename: params.filename,
@@ -161,6 +165,21 @@ export class Scriptivox {
       maxRetries: options.maxRetries,
     });
     return data;
+  }
+
+  /**
+   * Transcribe an earlier completed job again, from the audio Scriptivox still holds (no upload, no
+   * download), with other options: another `language`, speaker labels on or off. A new job, charged
+   * like any other; the earlier one stays as it is. The options are this call's own: nothing is copied
+   * from the earlier job (leave out `language` and it is detected again). The audio is kept 24 hours
+   * after a job ends; after that this throws SourceExpiredError (409): send the file again.
+   */
+  transcribeAgain(
+    sourceTranscriptionId: string,
+    params: TranscriptionOptions = {},
+    options: IdempotentRequestOptions = {},
+  ): Promise<TranscriptionCreated> {
+    return this.transcribe({ ...params, source_transcription_id: sourceTranscriptionId }, options);
   }
 
   // ─── Read ──────────────────────────────────────────────────────────────────

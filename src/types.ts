@@ -131,9 +131,14 @@ export interface TranscriptionOptions {
 
 export type TranscribeParams = TranscriptionOptions &
   (
-    | { url: string; file?: never; upload_id?: never }
-    | { file: FileInput; filename?: string; size?: number; url?: never; upload_id?: never }
-    | { upload_id: string; url?: never; file?: never }
+    | { url: string; file?: never; upload_id?: never; source_transcription_id?: never }
+    | { file: FileInput; filename?: string; size?: number; url?: never; upload_id?: never; source_transcription_id?: never }
+    | { upload_id: string; url?: never; file?: never; source_transcription_id?: never }
+    /**
+     * An earlier completed job of yours, transcribed again from the audio it holds (no upload, no download),
+     * with this call's own options. Only within 24 hours of that job's end: after that SourceExpiredError (409).
+     */
+    | { source_transcription_id: string; url?: never; file?: never; upload_id?: never }
   );
 
 export interface TranscribeOptions extends IdempotentRequestOptions {
