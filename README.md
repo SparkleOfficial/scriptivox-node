@@ -62,6 +62,23 @@ const job2 = await client.transcribe({ file: './lecture.mp4' }, { onUploadProgre
 
 `file` can be a path, a `file:` URL, a `Buffer`/`Uint8Array`, a `Blob`/`File`, or a readable stream. Bytes and streams need `filename: 'audio.mp3'`, and a stream also needs `size`. Filenames are made ASCII-safe for you (`Réunion.mp3` is sent as `Reunion.mp3`).
 
+## Transcribe again with other options
+
+A finished job can be transcribed again from the audio Scriptivox still holds, with another language or speaker labels: no upload, no download. It is a new job, charged like any other. The options are this call's own (leave out `language` and it is detected again).
+
+```js
+import { SourceExpiredError } from 'scriptivox';
+
+try {
+  const again = await client.transcribeAgain(job.id, { language: 'es', diarize: true });
+  const done = await client.wait(again.id);
+} catch (err) {
+  if (err instanceof SourceExpiredError) {
+    // The audio is kept 24 hours after a job ends: send the file again with transcribe({ file }) or { url }.
+  }
+}
+```
+
 ## Waiting
 
 `wait(id)` polls until the job ends. It waits 2 s between polls at first, growing to 10 s, and honours `Retry-After` when rate-limited. It resolves with the completed job. A job that fails throws `TranscriptionFailedError`, whose `code` is the job's `error.code`:

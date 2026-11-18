@@ -28,6 +28,8 @@ import {
   BadRequestError,
   UrlNotAccessibleError,
   LinkCheckUnavailableError,
+  SourceExpiredError,
+  ConflictError,
   TranscriptionFailedError,
   WaitTimeoutError,
   APITimeoutError,
@@ -92,6 +94,33 @@ test('transcribe: language null is sent (auto-detect); exactly one source requir
   assert.deepEqual(mock.requests[0].json, { language: null, upload_id: 'u1' });
   await assert.rejects(client.transcribe({ language: 'en' }), TypeError);
   await assert.rejects(client.transcribe({ url: 'https://x/a.mp3', upload_id: 'u' }), TypeError);
+});
+
+test('transcribeAgain(id, options): source_transcription_id with the call\'s own options; exactly one source', async () => {
+  mock.reply(job('j9', 'created'));
+  const out = await client.transcribeAgain('b2c3d4e5-f6a7-8901-bcde-f12345678901', { language: 'es', diarize: true }, { idempotencyKey: 'again-1' });
+  assert.deepEqual(out, { id: 'j9', status: 'created' });
+  const r = mock.requests[0];
+  assert.equal(r.path, '/v1/transcribe');
+  assert.deepEqual(r.json, { language: 'es', diarize: true, source_transcription_id: 'b2c3d4e5-f6a7-8901-bcde-f12345678901' });
+  assert.equal(r.headers['idempotency-key'], 'again-1');
+  mock.reset();
+  mock.reply(job('j10', 'created'));
+  await client.transcribe({ source_transcription_id: 's1' });
+  assert.deepEqual(mock.requests[0].json, { source_transcription_id: 's1' }, 'nothing added: the options are the call\'s own');
+  await assert.rejects(client.transcribe({ source_transcription_id: 's1', url: 'https://x/a.mp3' }), TypeError);
+  await assert.rejects(client.transcribe({ source_transcription_id: 's1', upload_id: 'u' }), TypeError);
+});
+
+test('409 SOURCE_EXPIRED: SourceExpiredError (a ConflictError) at once, not retried', async () => {
+  mock.reply(apiError(409, 'SOURCE_EXPIRED', 'The audio of transcription s1 was deleted 24 hours after that job ended, so it cannot be transcribed again.', { transcription_id: 's1', expired_at: '2026-11-16T10:00:00.000Z' }));
+  const err = await client.transcribeAgain('s1', { language: 'fr' }).catch((e) => e);
+  assert.ok(err instanceof SourceExpiredError);
+  assert.ok(err instanceof ConflictError);
+  assert.equal(err.code, 'SOURCE_EXPIRED');
+  assert.equal(err.status, 409);
+  assert.equal(err.error.transcription_id, 's1');
+  assert.equal(mock.requests.length, 1);
 });
 
 test('a retried submit reuses the same Idempotency-Key (500 then 200)', async () => {
@@ -198,9 +227,9 @@ test('typed errors: class per code, category per status, request id, docs url', 
   assert.equal(eRoute.code, 'NOT_FOUND');
 });
 
-test('every code in the OpenAPI document has a class; 29 sync and 13 async codes', () => {
-  assert.equal(API_ERROR_CODES.length, 29);
-  assert.equal(TRANSCRIPTION_ERROR_CODES.length, 13);
+test('every code in the OpenAPI document has a class; 32 sync and 14 async codes', () => {
+  assert.equal(API_ERROR_CODES.length, 32);
+  assert.equal(TRANSCRIPTION_ERROR_CODES.length, 14);
   for (const code of API_ERROR_CODES) assert.equal(typeof ERROR_CLASS_BY_CODE[code], 'function', code);
 });
 
