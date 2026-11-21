@@ -39,8 +39,11 @@ import {
   ERROR_CLASS_BY_CODE,
   TRANSCRIPTION_ERROR_CODES,
   safeFilename,
+  status,
   VERSION,
 } from '../dist/esm/index.js';
+import { retryDelayFor } from '../dist/esm/http.js';
+import * as generatedErrors from '../dist/esm/generated/errors.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 let mock;
@@ -282,6 +285,142 @@ test('409 IDEMPOTENCY_KEY_LOCKED and 503 MAINTENANCE with Retry-After are retrie
   assert.ok(e instanceof MaintenanceError && e instanceof ServiceUnavailableError);
 });
 
+// ─── Service status (service status Phase 8) ────────────────────────────────
+
+const STATUS_URL = 'https://api.scriptivox.com/v1/status';
+const OPERATIONAL = {
+  status: 'operational',
+  accepting_new_jobs: true,
+  maintenance: null,
+  still_working: ['POST /v1/upload', 'POST /v1/transcribe', 'GET /v1/balance'],
+  upcoming: [],
+  checked_at: '2026-11-21T10:00:00.000Z',
+  status_page: 'https://status.scriptivox.com',
+};
+const UNKNOWN = { ...OPERATIONAL, status: 'unknown', accepting_new_jobs: null, still_working: null, upcoming: null };
+const PAUSED = {
+  ...OPERATIONAL,
+  status: 'maintenance',
+  accepting_new_jobs: false,
+  maintenance: {
+    paused: [{ scope: 'upload', name: 'New uploads and transcriptions', message: 'Planned upgrade.', routes: ['POST /v1/upload', 'POST /v1/transcribe'], back_by: '2026-11-21T10:40:00.000Z' }],
+    retry_after_seconds: 2400,
+  },
+  still_working: ['GET /v1/balance'],
+};
+const maintenance503 = (extra, retryAfter = '300') =>
+  apiError(503, 'MAINTENANCE', 'New uploads and transcriptions are briefly paused for maintenance.', { scope: 'upload', status_url: STATUS_URL, back_by: null, ...extra }, { 'retry-after': retryAfter });
+
+test('client.status(): GET /v1/status with no Authorization header; the body comes back as the API sent it', async () => {
+  mock.reply({ status: 200, body: PAUSED });
+  const s = await client.status();
+  assert.deepEqual(s, PAUSED);
+  assert.equal(mock.requests.length, 1);
+  assert.equal(mock.requests[0].method, 'GET');
+  assert.equal(mock.requests[0].url, '/v1/status');
+  assert.equal(mock.requests[0].headers.authorization, undefined, 'no key is sent');
+  assert.match(mock.requests[0].headers['user-agent'], /^scriptivox-node\//);
+});
+
+test('status(): no client and no key needed; never sends Authorization, even from defaultHeaders; a /v1 base URL works', async () => {
+  const saved = process.env.SCRIPTIVOX_API_KEY;
+  delete process.env.SCRIPTIVOX_API_KEY;
+  try {
+    mock.reply({ status: 200, body: OPERATIONAL });
+    const s = await status({ baseUrl: mock.url + '/v1/', defaultHeaders: { authorization: 'sk_live_should_not_go', 'X-Trace': 't1' } });
+    assert.deepEqual(s, OPERATIONAL);
+    assert.equal(mock.requests[0].url, '/v1/status');
+    assert.equal(mock.requests[0].headers.authorization, undefined);
+    assert.equal(mock.requests[0].headers['x-trace'], 't1');
+
+    const savedBase = process.env.SCRIPTIVOX_BASE_URL;
+    process.env.SCRIPTIVOX_BASE_URL = mock.url;
+    mock.reply({ status: 200, body: UNKNOWN });
+    const u = await status();
+    process.env.SCRIPTIVOX_BASE_URL = savedBase ?? '';
+    if (savedBase === undefined) delete process.env.SCRIPTIVOX_BASE_URL;
+    assert.equal(u.status, 'unknown');
+    assert.equal(u.accepting_new_jobs, null, '"could not check" stays null, never turned into true or false');
+    assert.equal(u.still_working, null);
+  } finally {
+    if (saved !== undefined) process.env.SCRIPTIVOX_API_KEY = saved;
+  }
+});
+
+test('status(): no answer at all throws APIConnectionError; it is never turned into a status', async () => {
+  const dead = await startMock();
+  const deadUrl = dead.url;
+  await dead.close();
+  const err = await status({ baseUrl: deadUrl, maxRetries: 0 }).catch((e) => e);
+  assert.ok(err instanceof APIConnectionError, String(err));
+  mock.reply({ status: 502, body: 'Bad gateway' }, { status: 200, body: OPERATIONAL });
+  const s = await status({ baseUrl: mock.url, maxRetries: 1 });
+  assert.equal(s.status, 'operational', 'a 5xx is retried like any safe GET');
+  assert.equal(mock.requests.length, 2);
+});
+
+test('MaintenanceError: scope, statusUrl and backBy from the answer; thrown at once with Retry-After 300', async () => {
+  mock.reply(maintenance503({}));
+  const err = await client.transcribe({ url: 'https://example.com/a.mp3' }).catch((e) => e);
+  assert.ok(err instanceof MaintenanceError);
+  assert.ok(err instanceof ServiceUnavailableError && err instanceof APIError);
+  assert.equal(err.code, 'MAINTENANCE');
+  assert.equal(err.status, 503);
+  assert.equal(err.scope, 'upload');
+  assert.equal(err.statusUrl, STATUS_URL);
+  assert.equal(err.backBy, null);
+  assert.equal(err.retryAfter, 300);
+  assert.equal(mock.requests.length, 1, 'a 5-minute pause is not slept on inside the call');
+
+  mock.reset();
+  mock.reply(maintenance503({ scope: 'link', back_by: '2026-11-21T10:40:00.000Z' }, '2400'));
+  const timed = await client.transcribe({ url: 'https://www.tiktok.com/@a/video/1' }).catch((e) => e);
+  assert.equal(timed.scope, 'link');
+  assert.equal(timed.backBy, '2026-11-21T10:40:00.000Z');
+  assert.equal(timed.retryAfter, 2400);
+  assert.equal(mock.requests.length, 1);
+
+  mock.reset();
+  mock.reply(apiError(503, 'MAINTENANCE', 'paused', {}, { 'retry-after': '300' }));
+  const older = await client.balance().catch((e) => e);
+  assert.ok(older instanceof MaintenanceError);
+  assert.equal(older.scope, undefined, 'an answer without the field leaves it undefined');
+  assert.equal(older.statusUrl, undefined);
+  assert.equal(older.backBy, null, 'no time set');
+});
+
+test('MaintenanceError is exported once, from the hand-written module, and is the class for MAINTENANCE', () => {
+  assert.equal(ERROR_CLASS_BY_CODE.MAINTENANCE, MaintenanceError);
+  assert.equal('MaintenanceError' in generatedErrors, false, 'the generated module maps to it and does not define its own');
+  assert.ok(API_ERROR_CODES.includes('MAINTENANCE'));
+});
+
+test('retries: a maintenance Retry-After of 60 s (a back_by under a minute away) is slept on; longer ones are thrown', () => {
+  const at = (retryAfter) => new MaintenanceError({ status: 503, code: 'MAINTENANCE', message: 'paused', retryAfter });
+  assert.equal(retryDelayFor(at(60), false, 0), 60_000);
+  assert.equal(retryDelayFor(at(61), false, 0), undefined);
+  assert.equal(retryDelayFor(at(300), true, 0), undefined);
+  assert.equal(retryDelayFor(at(3600), true, 0), undefined);
+});
+
+test('wait(): reads paused for maintenance (the job carries on) are waited out, then polling goes on', async () => {
+  const c = make({ maxRetries: 0 });
+  mock.reply(
+    job('w6', 'processing'),
+    apiError(503, 'MAINTENANCE', 'Paused for a planned upgrade.', { scope: 'global', status_url: STATUS_URL, back_by: null }, { 'retry-after': '1' }),
+    job('w6', 'completed', { result: { full_transcript: 'ok' } }),
+  );
+  const done = await c.wait('w6', { pollInterval: 10 });
+  assert.equal(done.result.full_transcript, 'ok');
+  assert.ok(mock.requests[2].at - mock.requests[1].at >= 950, 'waited the Retry-After');
+
+  mock.reset();
+  mock.reply(job('w7', 'processing'), apiError(503, 'MAINTENANCE', 'Paused.', { scope: 'global' }, { 'retry-after': '300' }));
+  const err = await c.wait('w7', { pollInterval: 10, timeout: 2_000 }).catch((e) => e);
+  assert.ok(err instanceof MaintenanceError, 'a pause longer than the time left is thrown');
+  assert.equal(err.scope, 'global');
+});
+
 test('wait(): polls until completed, growing the interval, with onPoll', async () => {
   mock.reply(job('w1', 'created'), job('w1', 'processing'), job('w1', 'processing'), job('w1', 'completed', { result: { full_transcript: 'hi' } }));
   const seen = [];
@@ -485,5 +624,10 @@ test('CommonJS build loads and exposes the same API', () => {
   assert.equal(cjs.default, cjs.Scriptivox);
   assert.equal(typeof cjs.verifyWebhook, 'function');
   assert.equal(typeof cjs.ZeroBalanceError, 'function');
+  assert.equal(typeof cjs.status, 'function');
+  assert.equal(cjs.ERROR_CLASS_BY_CODE.MAINTENANCE, cjs.MaintenanceError);
+  const e = new cjs.MaintenanceError({ status: 503, code: 'MAINTENANCE', message: 'm', error: { scope: 'global', status_url: STATUS_URL, back_by: null } });
+  assert.ok(e instanceof cjs.ServiceUnavailableError && e instanceof cjs.APIError);
+  assert.deepEqual([e.scope, e.statusUrl, e.backBy], ['global', STATUS_URL, null]);
   assert.equal(cjs.VERSION, VERSION);
 });

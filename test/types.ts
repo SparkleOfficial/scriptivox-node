@@ -1,16 +1,44 @@
 // Compile-only: how a customer's TypeScript uses the published types (npm run test:types).
 import Scriptivox, {
   APIError,
+  MaintenanceError,
   RateLimitExceededError,
   TranscriptionFailedError,
   ZeroBalanceError,
+  status,
   verifyWebhook,
   type Balance,
   type CompletedTranscription,
+  type ServiceStatus,
+  type ServiceStatusPause,
   type Transcription,
   type TranscriptionSummary,
   type WebhookEvent,
 } from 'scriptivox';
+
+export async function statusUsage(client: Scriptivox): Promise<void> {
+  const s: ServiceStatus = await client.status();
+  const keyless: ServiceStatus = await status({ baseUrl: 'https://api-test.scriptivox.com', timeout: 5_000 });
+  const state: 'operational' | 'maintenance' | 'unknown' = s.status;
+  // @ts-expect-error accepting_new_jobs is null while the state could not be checked
+  const accepting: boolean = keyless.accepting_new_jobs;
+  const pauses: ServiceStatusPause[] = s.maintenance?.paused ?? [];
+  const backBy: string | null | undefined = pauses[0]?.back_by;
+  const wait: number | undefined = s.maintenance?.retry_after_seconds;
+  const working: string[] | null = s.still_working;
+  try {
+    await client.transcribe({ url: 'https://example.com/a.mp3' });
+  } catch (e) {
+    if (e instanceof MaintenanceError) {
+      const scope: string | undefined = e.scope;
+      const url: string | undefined = e.statusUrl;
+      const by: string | null = e.backBy;
+      const code: 'MAINTENANCE' = e.code;
+      void [scope, url, by, code, e.retryAfter];
+    }
+  }
+  void [state, accepting, backBy, wait, working];
+}
 
 export async function usage(client: Scriptivox, raw: string, headers: Record<string, string>): Promise<void> {
   const job = await client.transcribe({ file: './a.mp3', language: 'en', diarize: true, speaker_count: 2 });

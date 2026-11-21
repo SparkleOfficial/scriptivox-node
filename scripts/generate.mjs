@@ -44,6 +44,15 @@ const CATEGORY_BY_STATUS = {
   503: 'ServiceUnavailableError',
 };
 
+/**
+ * Codes whose class is written by hand in src/errors.ts because it reads extra fields of the
+ * `error` object (MaintenanceError: scope, status_url, back_by). The generated module maps the
+ * code to that class and does not write its own.
+ */
+const HAND_WRITTEN_BY_CODE = {
+  MAINTENANCE: 'MaintenanceError',
+};
+
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const valueAfter = (name) => {
@@ -84,8 +93,16 @@ function buildErrorsModule(spec, specHash) {
   const usedCategories = new Set();
   const classes = [];
   const mapping = [];
+  for (const code of Object.keys(HAND_WRITTEN_BY_CODE)) {
+    if (!codes.includes(code)) throw new Error(`HAND_WRITTEN_BY_CODE names ${code}, which the document's error codes do not have`);
+  }
   for (const code of codes) {
     const status = statusByCode[code];
+    if (HAND_WRITTEN_BY_CODE[code]) {
+      mapping.push(`  ${code}: ${HAND_WRITTEN_BY_CODE[code]},`);
+      usedCategories.add(HAND_WRITTEN_BY_CODE[code]);
+      continue;
+    }
     const parent = categoryFor(status);
     usedCategories.add(parent);
     const name = classNameForCode(code);

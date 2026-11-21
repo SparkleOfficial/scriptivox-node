@@ -7,7 +7,8 @@
  *   │   ├── AuthenticationError (401)  │   generated in generated/errors.ts from the OpenAPI document)
  *   │   ├── PaymentRequiredError (402) ├── InsufficientBalanceError, ZeroBalanceError
  *   │   ├── ... one class per HTTP status the API uses
- *   │   └── RateLimitError (429)       └── RateLimitExceededError
+ *   │   ├── RateLimitError (429)       ├── RateLimitExceededError
+ *   │   └── ServiceUnavailableError    └── MaintenanceError (503, written here: scope, statusUrl, backBy)
  *   ├── APIConnectionError             no answer: DNS, refused, reset (APITimeoutError: no answer in time)
  *   ├── UploadFailedError              the file PUT to the presigned upload URL failed
  *   ├── TranscriptionFailedError       wait(): the job ended with status "failed" (code = the job's error.code)
@@ -79,6 +80,39 @@ export class UnprocessableEntityError extends APIError {}
 export class RateLimitError extends APIError {}
 export class InternalServerError extends APIError {}
 export class ServiceUnavailableError extends APIError {}
+
+/**
+ * `MAINTENANCE` (HTTP 503). This part of the API is briefly paused for maintenance: nothing was
+ * created or charged. Send the same request again after `retryAfter` seconds. `status()`
+ * (GET /v1/status, no API key needed) says what is paused, what still works and how long to wait.
+ * Jobs already accepted always finish.
+ */
+export class MaintenanceError extends ServiceUnavailableError {
+  declare readonly code: 'MAINTENANCE';
+  /**
+   * What is paused, as `error.scope` names it: "upload" (new jobs and uploads), "link" (a link to a
+   * video or social media site on transcribe; uploads and other file addresses carry on) or
+   * "global" (site-wide maintenance, or full maintenance, which pauses every call, reads included).
+   * New values may be added. undefined when the answer had none.
+   */
+  readonly scope: string | undefined;
+  /** `error.status_url`: the address of GET /v1/status. undefined when the answer had none. */
+  readonly statusUrl: string | undefined;
+  /**
+   * `error.back_by`: when the pause is expected to end, if a time was set (ISO 8601, UTC); otherwise
+   * null. `retryAfter` then counts the seconds until it (at most an hour). It is a plan: `status()`
+   * says when the pause is really over.
+   */
+  readonly backBy: string | null;
+
+  constructor(init: APIErrorInit) {
+    super(init);
+    const error = init.error ?? {};
+    this.scope = typeof error.scope === 'string' ? error.scope : undefined;
+    this.statusUrl = typeof error.status_url === 'string' ? error.status_url : undefined;
+    this.backBy = typeof error.back_by === 'string' ? error.back_by : null;
+  }
+}
 
 /** The category class for an HTTP status, used when a code is not one the SDK knows. */
 export function categoryForStatus(status: number): new (init: APIErrorInit) => APIError {

@@ -29,6 +29,8 @@ export interface SendOptions {
   maxRetries?: number;
   /** Return the body as text instead of parsing JSON. */
   text?: boolean;
+  /** false: send no Authorization header at all (GET /v1/status needs no key). Default true. */
+  auth?: boolean;
 }
 
 export interface SendResult<T> {
@@ -172,6 +174,9 @@ export class Transport {
       Accept: opts.text ? 'text/plain, text/vtt, application/json' : 'application/json',
       'User-Agent': userAgent(),
     };
+    if (opts.auth === false) {
+      for (const name of Object.keys(headers)) if (name.toLowerCase() === 'authorization') delete headers[name];
+    }
     if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
     if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey;
     const body = opts.body === undefined ? undefined : JSON.stringify(opts.body);

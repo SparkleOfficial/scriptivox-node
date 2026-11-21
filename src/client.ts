@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { RateLimitError, ScriptivoxError, TranscriptionFailedError, WaitTimeoutError } from './errors.js';
+import { MaintenanceError, RateLimitError, ScriptivoxError, TranscriptionFailedError, WaitTimeoutError } from './errors.js';
 import { Transport, sleep } from './http.js';
 import { putFile, resolveSource, safeFilename } from './upload.js';
 import { verifyWebhook, type HeadersLike, type VerifyWebhookOptions } from './webhooks.js';
@@ -15,6 +15,8 @@ import type {
   IdempotentRequestOptions,
   ListParams,
   RequestOptions,
+  ServiceStatus,
+  StatusOptions,
   TranscribeOptions,
   TranscribeParams,
   Transcription,
@@ -52,6 +54,44 @@ function isoOrUndefined(value: string | Date | undefined): string | undefined {
   return value instanceof Date ? value.toISOString() : value;
 }
 
+function resolveBaseUrl(baseUrl: string | undefined): string {
+  return (baseUrl ?? env('SCRIPTIVOX_BASE_URL') ?? DEFAULT_BASE_URL).replace(/\/+$/, '').replace(/\/v1$/, '');
+}
+
+/** GET /v1/status with no Authorization header: the call needs no key and is limited per IP. */
+async function readStatus(transport: Transport, options: RequestOptions): Promise<ServiceStatus> {
+  const { data } = await transport.send<ServiceStatus>('GET', '/v1/status', { idempotent: true, auth: false, ...options });
+  return data;
+}
+
+/**
+ * GET /v1/status with no client and no API key: whether the API is taking new jobs right now, what
+ * is paused for maintenance and why, what still works, and planned maintenance ahead.
+ *
+ *   import { status } from 'scriptivox';
+ *   const s = await status();
+ *   if (s.accepting_new_jobs === false) console.log(s.maintenance?.paused.map((p) => p.name));
+ *
+ * Read `status`: "operational", "maintenance" or "unknown". "unknown" means the state could not be
+ * checked just now, not that the API is down. If the call itself gets no answer, this throws
+ * (APIConnectionError); it never turns a failed call into a status.
+ */
+export async function status(options: StatusOptions = {}): Promise<ServiceStatus> {
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+  if (typeof fetchImpl !== 'function') {
+    throw new ScriptivoxError('No fetch available: use Node 18 or newer, or pass { fetch }.');
+  }
+  const transport = new Transport({
+    apiKey: '',
+    baseUrl: resolveBaseUrl(options.baseUrl),
+    maxRetries: options.maxRetries ?? DEFAULT_MAX_RETRIES,
+    timeout: options.timeout ?? DEFAULT_TIMEOUT_MS,
+    fetch: fetchImpl.bind(globalThis),
+    defaultHeaders: options.defaultHeaders ?? {},
+  });
+  return readStatus(transport, { signal: options.signal });
+}
+
 /**
  * The Scriptivox API client.
  *
@@ -72,10 +112,9 @@ export class Scriptivox {
     if (typeof fetchImpl !== 'function') {
       throw new ScriptivoxError('No fetch available: use Node 18 or newer, or pass { fetch }.');
     }
-    const baseUrl = (options.baseUrl ?? env('SCRIPTIVOX_BASE_URL') ?? DEFAULT_BASE_URL).replace(/\/+$/, '').replace(/\/v1$/, '');
     this.transport = new Transport({
       apiKey,
-      baseUrl,
+      baseUrl: resolveBaseUrl(options.baseUrl),
       maxRetries: options.maxRetries ?? DEFAULT_MAX_RETRIES,
       timeout: options.timeout ?? DEFAULT_TIMEOUT_MS,
       fetch: fetchImpl.bind(globalThis),
@@ -212,7 +251,8 @@ export class Scriptivox {
   /**
    * Poll until the job ends. Resolves with the completed job; a failed job throws
    * TranscriptionFailedError (its `code` is the job's error.code, e.g. URL_NOT_ACCESSIBLE).
-   * The wait between polls starts at 2 s and grows to 10 s; a 429 waits out its Retry-After.
+   * The wait between polls starts at 2 s and grows to 10 s; a 429, or a MaintenanceError while
+   * reads are paused (the job carries on), waits out its Retry-After when that fits in the timeout.
    */
   async wait(id: string, options: WaitOptions = {}): Promise<CompletedTranscription> {
     const timeoutMs = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
@@ -226,7 +266,13 @@ export class Scriptivox {
       try {
         job = await this.get(id, { signal: options.signal });
       } catch (err) {
-        if (err instanceof RateLimitError && err.retryAfter !== undefined && Date.now() + err.retryAfter * 1000 < deadline) {
+        // A rate limit, or full maintenance (reads paused for a few minutes while the job carries
+        // on): wait out the Retry-After and poll again, as long as that fits before the deadline.
+        if (
+          (err instanceof RateLimitError || err instanceof MaintenanceError) &&
+          err.retryAfter !== undefined &&
+          Date.now() + err.retryAfter * 1000 < deadline
+        ) {
           await sleep(err.retryAfter * 1000, options.signal);
           continue;
         }
@@ -287,6 +333,21 @@ export class Scriptivox {
   async balance(options: RequestOptions = {}): Promise<Balance> {
     const { data } = await this.transport.send<Balance>('GET', '/v1/balance', { idempotent: true, ...options });
     return data;
+  }
+
+  /**
+   * GET /v1/status: whether the API is taking new jobs right now, what is paused for maintenance and
+   * why (each pause's scope, message, the calls it stops and back_by, the time we expect it to end if
+   * we set one), what still works, how long to wait, and planned maintenance ahead. Sends no API key:
+   * the call needs none and is limited per IP. To call it with no key at all, use the exported
+   * status() function.
+   *
+   * Read `status`: "operational", "maintenance" or "unknown". "unknown" means the state could not be
+   * checked just now, not that the API is down. If the call itself gets no answer, this throws
+   * (APIConnectionError); it never turns a failed call into a status.
+   */
+  status(options: RequestOptions = {}): Promise<ServiceStatus> {
+    return readStatus(this.transport, options);
   }
 
   // ─── Webhooks and feedback ─────────────────────────────────────────────────

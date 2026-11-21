@@ -25,6 +25,12 @@ export type FeedbackRequest = Schemas['FeedbackRequest'];
 export type FeedbackResult = Schemas['FeedbackResult'];
 export type WebhookSendResult = Schemas['WebhookSendResult'];
 export type ApiErrorBody = Schemas['Error'];
+/** What status() (GET /v1/status) returns. */
+export type ServiceStatus = Schemas['ServiceStatus'];
+/** One pause in `ServiceStatus.maintenance.paused`. */
+export type ServiceStatusPause = Schemas['ServiceStatusPause'];
+/** One planned maintenance window in `ServiceStatus.upcoming`. */
+export type ServiceStatusWindow = Schemas['ServiceStatusWindow'];
 
 /** A finished job: `status` is "completed" and `result` is filled in. What wait() resolves with. */
 export type CompletedTranscription = Transcription & {
@@ -72,6 +78,16 @@ export interface RequestOptions {
   timeout?: number;
   /** Retries for this call, overriding the client's. */
   maxRetries?: number;
+}
+
+/** Options of the exported status() function, which needs no client and no API key. */
+export interface StatusOptions extends RequestOptions {
+  /** Default: SCRIPTIVOX_BASE_URL, else https://api.scriptivox.com. A trailing /v1 is accepted. */
+  baseUrl?: string;
+  /** A fetch implementation (default: the global fetch of Node 18+). */
+  fetch?: typeof globalThis.fetch;
+  /** Extra headers on the request (an Authorization header is never sent). */
+  defaultHeaders?: Record<string, string>;
 }
 
 export interface IdempotentRequestOptions extends RequestOptions {

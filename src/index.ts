@@ -1,4 +1,4 @@
-export { Scriptivox, DEFAULT_BASE_URL } from './client.js';
+export { Scriptivox, DEFAULT_BASE_URL, status } from './client.js';
 export { Scriptivox as default } from './client.js';
 export {
   verifyWebhook,
