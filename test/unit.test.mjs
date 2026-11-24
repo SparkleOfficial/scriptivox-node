@@ -213,6 +213,7 @@ test('typed errors: class per code, category per status, request id, docs url', 
   assert.equal(err.code, 'ZERO_BALANCE');
   assert.equal(err.requestId, 'req_0123456789abcdef');
   assert.equal(err.docsUrl, 'https://platform.scriptivox.com/docs/api-reference#error-codes');
+  assert.equal(err.helpId, undefined, 'an error without help_id (the table link) has no helpId');
   assert.match(err.message, /deposit funds.*\[ZERO_BALANCE, request req_0123456789abcdef\]/);
   assert.equal(mock.requests.length, 1, '402 is not retried');
 
@@ -432,6 +433,35 @@ test('wait(): polls until completed, growing the interval, with onPoll', async (
   assert.ok(gaps[0] >= 15 && gaps[2] >= 35, `gaps ${gaps}`);
 });
 
+test('an error that links its own help page: docsUrl and helpId', async () => {
+  mock.reply(apiError(402, 'ZERO_BALANCE', 'No balance found. Please deposit funds first.', {
+    docs_url: 'https://www.scriptivox.com/errors/api-no-balance',
+    help_id: 'api-no-balance',
+  }));
+  const err = await client.transcribe({ url: 'https://example.com/a.mp3' }).catch((e) => e);
+  assert.ok(err instanceof ZeroBalanceError);
+  assert.equal(err.docsUrl, 'https://www.scriptivox.com/errors/api-no-balance');
+  assert.equal(err.helpId, 'api-no-balance');
+  assert.equal(err.error.help_id, 'api-no-balance');
+  assert.equal(err.code, 'ZERO_BALANCE');
+});
+
+test('wait(): a failed job\'s help page is on TranscriptionFailedError', async () => {
+  mock.reply(job('w4', 'failed', {
+    error: {
+      code: 'URL_NOT_ACCESSIBLE',
+      message: 'Google Drive could not find this file, or it is not shared with "Anyone with the link". Share it with "Anyone with the link" and try again, or upload the file.',
+      docs_url: 'https://www.scriptivox.com/errors/drive-not-shared',
+      help_id: 'drive-not-shared',
+    },
+  }));
+  const err = await client.wait('w4').catch((e) => e);
+  assert.ok(err instanceof TranscriptionFailedError);
+  assert.equal(err.code, 'URL_NOT_ACCESSIBLE');
+  assert.equal(err.docsUrl, 'https://www.scriptivox.com/errors/drive-not-shared');
+  assert.equal(err.helpId, 'drive-not-shared');
+});
+
 test('wait(): a failed job throws TranscriptionFailedError with the job error code', async () => {
   mock.reply(job('w2', 'failed', { error: { code: 'URL_NOT_ACCESSIBLE', message: 'The URL could not be fetched (HTTP 403).' } }));
   const err = await client.wait('w2').catch((e) => e);
@@ -440,6 +470,8 @@ test('wait(): a failed job throws TranscriptionFailedError with the job error co
   assert.equal(err.transcriptionId, 'w2');
   assert.equal(err.transcription.status, 'failed');
   assert.match(err.message, /HTTP 403/);
+  assert.equal(err.docsUrl, undefined, 'a job answered without the fields (before the API had them)');
+  assert.equal(err.helpId, undefined);
 });
 
 test('wait(): timeout throws WaitTimeoutError with the last status', async () => {

@@ -173,6 +173,8 @@ try {
 
 The full list of codes is in the [API reference](https://platform.scriptivox.com/docs/api-reference#error-codes).
 
+Every error links the page that explains it: `err.docsUrl` (for example `https://www.scriptivox.com/errors/api-no-balance`) and `err.helpId`, that page's id. A `TranscriptionFailedError` has both too, from the job's own failure, so they are often finer than the code (a `URL_NOT_ACCESSIBLE` job whose Google Drive file is not shared has `helpId` `"drive-not-shared"`). Branch on `code`; show or log `docsUrl` for the person who has to fix it. `helpId` is undefined when an error has no page of its own.
+
 ## Maintenance
 
 Now and then part of the API is paused for maintenance. A paused request answers `503 MAINTENANCE` and the SDK throws `MaintenanceError`: nothing was created or charged, so send the same request again later. Jobs already accepted always finish.

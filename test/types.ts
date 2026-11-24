@@ -66,9 +66,13 @@ export async function usage(client: Scriptivox, raw: string, headers: Record<str
     case 'transcription.completed':
       void event.result.full_transcript;
       break;
-    case 'transcription.failed':
+    case 'transcription.failed': {
       void event.error.code;
+      const page: string | undefined = event.error.docs_url;
+      const helpId: string | undefined = event.error.help_id;
+      void [page, helpId];
       break;
+    }
     case 'webhook.test':
       void event.test;
       break;
@@ -79,7 +83,8 @@ export async function usage(client: Scriptivox, raw: string, headers: Record<str
   } catch (e) {
     if (e instanceof ZeroBalanceError) void e.requestId;
     if (e instanceof RateLimitExceededError) void e.error?.in_flight;
-    if (e instanceof TranscriptionFailedError) void e.code;
+    if (e instanceof TranscriptionFailedError) void [e.code, e.docsUrl, e.helpId];
+    if (e instanceof APIError) { const id: string | undefined = e.helpId; void [id, e.docsUrl]; }
     if (e instanceof APIError && e.code === 'TRANSCRIPTION_NOT_FOUND') void e.status;
   }
   void [text, t, srt, wrong, on];

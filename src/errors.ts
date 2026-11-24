@@ -31,6 +31,7 @@ export interface APIErrorInit {
   message: string;
   requestId?: string;
   docsUrl?: string;
+  helpId?: string;
   retryAfter?: number;
   /** The whole `error` object from the body, including fields beyond code and message. */
   error?: Record<string, unknown>;
@@ -45,7 +46,17 @@ export class APIError extends ScriptivoxError {
   readonly code: string;
   /** `X-Request-Id` / `error.request_id` (`req_` + 16 hex). Quote it to support. */
   readonly requestId: string | undefined;
+  /**
+   * `error.docs_url`: the page that explains this exact error and what to do
+   * (https://www.scriptivox.com/errors/<helpId>). An error with no page of its own links the
+   * error-codes table.
+   */
   readonly docsUrl: string | undefined;
+  /**
+   * `error.help_id`: the id of that page, e.g. "api-no-balance". Stable (never renamed), often
+   * finer than `code`; undefined when the error has no page of its own. Branch on `code`.
+   */
+  readonly helpId: string | undefined;
   /** Seconds from the `Retry-After` header, when the answer had one. */
   readonly retryAfter: number | undefined;
   /** The whole `error` object (extra fields such as `in_flight` and `limit` live here). */
@@ -60,6 +71,7 @@ export class APIError extends ScriptivoxError {
     this.code = init.code;
     this.requestId = init.requestId;
     this.docsUrl = init.docsUrl;
+    this.helpId = init.helpId;
     this.retryAfter = init.retryAfter;
     this.error = init.error;
     this.headers = init.headers ?? {};
@@ -161,6 +173,16 @@ export class TranscriptionFailedError extends ScriptivoxError {
   readonly code: string;
   readonly transcriptionId: string;
   readonly transcription: Transcription;
+  /**
+   * The job's `error.docs_url`: the page that explains why this job failed and what to do
+   * (https://www.scriptivox.com/errors/<helpId>). undefined for a job answered without one.
+   */
+  readonly docsUrl: string | undefined;
+  /**
+   * The job's `error.help_id`, e.g. "drive-not-shared": often finer than `code` (that one is a
+   * URL_NOT_ACCESSIBLE). Stable (never renamed). undefined for a job answered without one.
+   */
+  readonly helpId: string | undefined;
   constructor(transcription: Transcription) {
     const code = transcription.error?.code ?? 'UNKNOWN_ERROR';
     const message = transcription.error?.message ?? 'The transcription failed.';
@@ -168,6 +190,8 @@ export class TranscriptionFailedError extends ScriptivoxError {
     this.code = code;
     this.transcriptionId = transcription.id;
     this.transcription = transcription;
+    this.docsUrl = typeof transcription.error?.docs_url === 'string' ? transcription.error.docs_url : undefined;
+    this.helpId = typeof transcription.error?.help_id === 'string' ? transcription.error.help_id : undefined;
   }
 }
 
