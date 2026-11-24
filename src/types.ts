@@ -167,7 +167,10 @@ export interface WaitOptions {
   timeout?: number;
   /** First wait between polls in milliseconds (default 2 000). */
   pollInterval?: number;
-  /** Longest wait between polls in milliseconds (default 10 000); the wait grows 1.5× per poll up to this. */
+  /**
+   * Longest wait between polls in milliseconds (default 10 000); the wait grows 1.5× per poll up to this. When the
+   * API answers with a longer Retry-After, wait() waits that long (up to 60 s); set this to keep polls closer.
+   */
   maxPollInterval?: number;
   /** Called with each poll's answer. */
   onPoll?: (transcription: Transcription) => void;

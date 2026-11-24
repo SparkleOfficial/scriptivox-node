@@ -81,7 +81,7 @@ try {
 
 ## Waiting
 
-`wait(id)` polls until the job ends. It waits 2 s between polls at first, growing to 10 s, and honours `Retry-After` when rate-limited. It resolves with the completed job. A job that fails throws `TranscriptionFailedError`, whose `code` is the job's `error.code`:
+`wait(id)` polls until the job ends. It waits 2 s between polls at first, growing to 10 s, and longer when a check of an unfinished job answers with a longer `Retry-After` (up to 60 s). It also honours `Retry-After` when rate-limited. It resolves with the completed job. A job that fails throws `TranscriptionFailedError`, whose `code` is the job's `error.code`:
 
 ```js
 import { TranscriptionFailedError } from 'scriptivox';
