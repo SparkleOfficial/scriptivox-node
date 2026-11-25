@@ -19,6 +19,10 @@ export type Word = Schemas['Word'];
 export type TranscriptionCreated = Schemas['TranscriptionCreated'];
 export type TranscriptionCancelled = Schemas['TranscriptionCancelled'];
 export type TranscriptionPage = Schemas['TranscriptionPage'];
+/** Why a job is waiting for its turn (`waiting` on a job while it waits; absent once it starts). */
+export type TranscriptionWaiting = Schemas['TranscriptionWaiting'];
+/** The account's jobs not started yet (`not_started` on POST /v1/transcribe's answer and its in-progress 429). */
+export type NotStarted = Schemas['NotStarted'];
 export type Upload = Schemas['Upload'];
 export type Balance = Schemas['Balance'];
 export type FeedbackRequest = Schemas['FeedbackRequest'];
