@@ -19,6 +19,10 @@ export type Word = Schemas['Word'];
 export type TranscriptionCreated = Schemas['TranscriptionCreated'];
 export type TranscriptionCancelled = Schemas['TranscriptionCancelled'];
 export type TranscriptionPage = Schemas['TranscriptionPage'];
+/** Why a job is waiting for its turn (`waiting` on a job while it waits; absent once it starts). */
+export type TranscriptionWaiting = Schemas['TranscriptionWaiting'];
+/** The account's jobs not started yet (`not_started` on POST /v1/transcribe's answer and its in-progress 429). */
+export type NotStarted = Schemas['NotStarted'];
 export type Upload = Schemas['Upload'];
 export type Balance = Schemas['Balance'];
 export type FeedbackRequest = Schemas['FeedbackRequest'];
@@ -167,7 +171,10 @@ export interface WaitOptions {
   timeout?: number;
   /** First wait between polls in milliseconds (default 2 000). */
   pollInterval?: number;
-  /** Longest wait between polls in milliseconds (default 10 000); the wait grows 1.5× per poll up to this. */
+  /**
+   * Longest wait between polls in milliseconds (default 10 000); the wait grows 1.5× per poll up to this. When the
+   * API answers with a longer Retry-After, wait() waits that long (up to 60 s); set this to keep polls closer.
+   */
   maxPollInterval?: number;
   /** Called with each poll's answer. */
   onPoll?: (transcription: Transcription) => void;

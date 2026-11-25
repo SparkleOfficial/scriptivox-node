@@ -43,6 +43,7 @@ import {
   VERSION,
 } from '../dist/esm/index.js';
 import { retryDelayFor } from '../dist/esm/http.js';
+import { nextPollDelay } from '../dist/esm/client.js';
 import * as generatedErrors from '../dist/esm/generated/errors.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -487,6 +488,44 @@ test('wait(): a 429 honours Retry-After and keeps polling', async () => {
   const done = await c.wait('w4', { pollInterval: 10 });
   assert.equal(done.result.full_transcript, 'ok');
   assert.ok(mock.requests[2].at - mock.requests[1].at >= 950);
+});
+
+test('wait(): an unfinished job\'s Retry-After longer than its own interval is waited out (database efficiency Phase 24)', async () => {
+  const ra = (id, status, seconds) => ({ status: 200, headers: { 'retry-after': String(seconds) }, body: { id, status } });
+  mock.reply(ra('w8', 'created', 1), ra('w8', 'processing', 1), job('w8', 'completed', { result: { full_transcript: 'ok' } }));
+  // pollInterval 20 ms: without the header the polls would come 20 ms and 30 ms apart.
+  const done = await client.wait('w8', { pollInterval: 20 });
+  assert.equal(done.result.full_transcript, 'ok');
+  const gaps = mock.requests.slice(1).map((r, i) => r.at - mock.requests[i].at);
+  assert.ok(gaps.every((g) => g >= 950 && g < 2_500), `gaps ${gaps}`);
+});
+
+test('wait(): never polls sooner than its own interval, whatever Retry-After says; a set maxPollInterval and 60 s cap it', async () => {
+  const ra = (id, status, seconds) => ({ status: 200, headers: { 'retry-after': String(seconds) }, body: { id, status } });
+  mock.reply(ra('w9', 'processing', 0), job('w9', 'completed', { result: { full_transcript: 'ok' } }));
+  await client.wait('w9', { pollInterval: 300 });
+  const gap = mock.requests[1].at - mock.requests[0].at;
+  assert.ok(gap >= 280, `gap ${gap}: sooner than the interval`);
+  mock.reset();
+  mock.reply(ra('w9b', 'processing', 20), job('w9b', 'completed', { result: { full_transcript: 'ok' } }));
+  await client.wait('w9b', { maxPollInterval: 100 });
+  const capped = mock.requests[1].at - mock.requests[0].at;
+  assert.ok(capped >= 90 && capped < 1_000, `capped ${capped}`);
+  assert.equal(nextPollDelay(20, 2_000, undefined), 20_000);
+  assert.equal(nextPollDelay(3, 2_000, undefined), 3_000);
+  assert.equal(nextPollDelay(3, 10_000, undefined), 10_000);
+  assert.equal(nextPollDelay(0, 2_000, undefined), 2_000);
+  assert.equal(nextPollDelay(900, 2_000, undefined), 60_000);
+  assert.equal(nextPollDelay(20, 2_000, 5_000), 5_000);
+  assert.equal(nextPollDelay(undefined, 4_500, undefined), 4_500);
+  assert.equal(nextPollDelay(Number.NaN, 4_500, undefined), 4_500);
+});
+
+test('wait(): a Retry-After longer than the time left ends the wait with WaitTimeoutError', async () => {
+  mock.always({ status: 200, headers: { 'retry-after': '20' }, body: { id: 'w10', status: 'processing' } });
+  const err = await client.wait('w10', { timeout: 1_000 }).catch((e) => e);
+  assert.ok(err instanceof WaitTimeoutError);
+  assert.equal(mock.requests.length, 1);
 });
 
 test('wait(): an AbortSignal stops it', async () => {

@@ -13,6 +13,8 @@ import Scriptivox, {
   type ServiceStatusPause,
   type Transcription,
   type TranscriptionSummary,
+  type TranscriptionWaiting,
+  type NotStarted,
   type WebhookEvent,
 } from 'scriptivox';
 
@@ -57,7 +59,15 @@ export async function usage(client: Scriptivox, raw: string, headers: Record<str
   for await (const item of client.list({ status: 'completed', from: new Date() })) {
     const s: TranscriptionSummary = item;
     void s.audio_duration_seconds;
+    // Why a job waits for its turn: on the list and the job alike, absent once it starts.
+    const why: TranscriptionWaiting | undefined = s.waiting;
+    const code: string | undefined = why?.reason;
+    const retryAt: string | null | undefined = why?.retry_at;
+    void [code, retryAt];
   }
+  const w: TranscriptionWaiting | undefined = t.waiting;
+  const accepted: NotStarted | undefined = job.not_started;
+  void [w, accepted?.google_drive];
   const b: Balance = await client.balance();
   const on: boolean = b.auto_topup.enabled;
 

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { MaintenanceError, RateLimitError, ScriptivoxError, TranscriptionFailedError, WaitTimeoutError } from './errors.js';
-import { Transport, sleep } from './http.js';
+import { Transport, parseRetryAfter, sleep } from './http.js';
 import { putFile, resolveSource, safeFilename } from './upload.js';
 import { verifyWebhook, type HeadersLike, type VerifyWebhookOptions } from './webhooks.js';
 import type {
@@ -39,6 +39,20 @@ const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_POLL_MS = 2_000;
 const DEFAULT_MAX_POLL_MS = 10_000;
+/** The longest Retry-After wait() follows on an unfinished job (the API sends 3 to 20 seconds). */
+const MAX_FOLLOWED_RETRY_AFTER_MS = 60_000;
+
+/**
+ * How long wait() sleeps after an unfinished job's answer: the longer of its own growing interval and the API's
+ * Retry-After (up to 60 s), so it never checks sooner than the API asks nor more often than without the header; a
+ * maxPollInterval the caller set still caps it. Without Retry-After: the growing interval, as before.
+ */
+export function nextPollDelay(retryAfterSeconds: number | undefined, interval: number, maxPollInterval: number | undefined): number {
+  if (retryAfterSeconds === undefined || !Number.isFinite(retryAfterSeconds) || retryAfterSeconds < 0) return interval;
+  const asked = Math.min(MAX_FOLLOWED_RETRY_AFTER_MS, Math.round(retryAfterSeconds * 1000));
+  const ms = Math.max(interval, asked);
+  return maxPollInterval !== undefined ? Math.min(ms, maxPollInterval) : ms;
+}
 
 const env = (name: string): string | undefined =>
   typeof process !== 'undefined' && process.env ? process.env[name] || undefined : undefined;
@@ -251,8 +265,10 @@ export class Scriptivox {
   /**
    * Poll until the job ends. Resolves with the completed job; a failed job throws
    * TranscriptionFailedError (its `code` is the job's error.code, e.g. URL_NOT_ACCESSIBLE).
-   * The wait between polls starts at 2 s and grows to 10 s; a 429, or a MaintenanceError while
-   * reads are paused (the job carries on), waits out its Retry-After when that fits in the timeout.
+   * The wait between polls starts at 2 s and grows to 10 s; when the API answers an unfinished job
+   * with a longer Retry-After (up to 60 s), the next poll waits that long instead (never longer than
+   * a maxPollInterval you set). A 429, or a MaintenanceError while reads are paused (the job carries
+   * on), waits out its Retry-After when that fits in the timeout.
    */
   async wait(id: string, options: WaitOptions = {}): Promise<CompletedTranscription> {
     const timeoutMs = options.timeout ?? DEFAULT_WAIT_TIMEOUT_MS;
@@ -263,8 +279,15 @@ export class Scriptivox {
 
     for (;;) {
       let job: Transcription;
+      let retryAfter: number | undefined;
       try {
-        job = await this.get(id, { signal: options.signal });
+        const res = await this.transport.send<Transcription>('GET', `/v1/transcribe/${pathId(id)}`, {
+          query: {},
+          idempotent: true,
+          signal: options.signal,
+        });
+        job = res.data;
+        retryAfter = parseRetryAfter(res.headers['retry-after']);
       } catch (err) {
         // A rate limit, or full maintenance (reads paused for a few minutes while the job carries
         // on): wait out the Retry-After and poll again, as long as that fits before the deadline.
@@ -282,8 +305,9 @@ export class Scriptivox {
       options.onPoll?.(job);
       if (job.status === 'completed') return job as CompletedTranscription;
       if (job.status === 'failed') throw new TranscriptionFailedError(job);
-      if (Date.now() + interval > deadline) throw new WaitTimeoutError(last, timeoutMs);
-      await sleep(interval, options.signal);
+      const delay = nextPollDelay(retryAfter, interval, options.maxPollInterval);
+      if (Date.now() + delay > deadline) throw new WaitTimeoutError(last, timeoutMs);
+      await sleep(delay, options.signal);
       interval = Math.min(Math.round(interval * 1.5), maxInterval);
     }
   }
