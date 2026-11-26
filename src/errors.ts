@@ -31,6 +31,7 @@ export interface APIErrorInit {
   message: string;
   requestId?: string;
   docsUrl?: string;
+  helpId?: string;
   retryAfter?: number;
   /** The whole `error` object from the body, including fields beyond code and message. */
   error?: Record<string, unknown>;
@@ -45,7 +46,13 @@ export class APIError extends ScriptivoxError {
   readonly code: string;
   /** `X-Request-Id` / `error.request_id` (`req_` + 16 hex). Quote it to support. */
   readonly requestId: string | undefined;
+  /** The page that explains this exact error: `https://www.scriptivox.com/errors/{helpId}`. */
   readonly docsUrl: string | undefined;
+  /**
+   * The help page's id (`error.help_id`), e.g. "api-key-invalid". Stable: an id is never renamed, and one code can have
+   * several pages. Branch on `code`; use `helpId` for more detail than the code gives.
+   */
+  readonly helpId: string | undefined;
   /** Seconds from the `Retry-After` header, when the answer had one. */
   readonly retryAfter: number | undefined;
   /** The whole `error` object (extra fields such as `in_flight` and `limit` live here). */
@@ -60,6 +67,7 @@ export class APIError extends ScriptivoxError {
     this.code = init.code;
     this.requestId = init.requestId;
     this.docsUrl = init.docsUrl;
+    this.helpId = init.helpId;
     this.retryAfter = init.retryAfter;
     this.error = init.error;
     this.headers = init.headers ?? {};
@@ -159,6 +167,10 @@ export class UploadFailedError extends ScriptivoxError {
  */
 export class TranscriptionFailedError extends ScriptivoxError {
   readonly code: string;
+  /** The page that explains this failure (the job's `error.docs_url`), when it has one. */
+  readonly docsUrl: string | undefined;
+  /** That page's stable id (the job's `error.help_id`), e.g. "drive-not-shared", when it has one. */
+  readonly helpId: string | undefined;
   readonly transcriptionId: string;
   readonly transcription: Transcription;
   constructor(transcription: Transcription) {
@@ -166,6 +178,8 @@ export class TranscriptionFailedError extends ScriptivoxError {
     const message = transcription.error?.message ?? 'The transcription failed.';
     super(`Transcription ${transcription.id} failed: ${message} [${code}]`);
     this.code = code;
+    this.docsUrl = typeof transcription.error?.docs_url === 'string' ? transcription.error.docs_url : undefined;
+    this.helpId = typeof transcription.error?.help_id === 'string' ? transcription.error.help_id : undefined;
     this.transcriptionId = transcription.id;
     this.transcription = transcription;
   }

@@ -122,6 +122,7 @@ export function errorFromResponse(status: number, bodyText: string, headers: Rec
     message,
     requestId,
     docsUrl: typeof errorObject?.docs_url === 'string' ? errorObject.docs_url : undefined,
+    helpId: typeof errorObject?.help_id === 'string' ? errorObject.help_id : undefined,
     retryAfter,
     error: errorObject,
     headers,

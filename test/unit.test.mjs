@@ -441,6 +441,23 @@ test('wait(): a failed job throws TranscriptionFailedError with the job error co
   assert.equal(err.transcriptionId, 'w2');
   assert.equal(err.transcription.status, 'failed');
   assert.match(err.message, /HTTP 403/);
+  assert.equal(err.helpId, undefined);
+  assert.equal(err.docsUrl, undefined);
+});
+
+test('help_id: an error answer and a failed job carry their help page id and address', async () => {
+  mock.reply(apiError(400, 'URL_NOT_ACCESSIBLE', 'This YouTube video is age-restricted, so its audio can\'t be fetched.', {
+    reason: 'link_age_restricted', help_id: 'social-post-unavailable', docs_url: 'https://www.scriptivox.com/errors/social-post-unavailable',
+  }));
+  const err = await client.transcribe({ url: 'https://www.youtube.com/watch?v=0000000000a' }).catch((e) => e);
+  assert.ok(err instanceof UrlNotAccessibleError);
+  assert.equal(err.helpId, 'social-post-unavailable');
+  assert.equal(err.docsUrl, 'https://www.scriptivox.com/errors/social-post-unavailable');
+  mock.reply(job('w4', 'failed', { error: { code: 'URL_NOT_ACCESSIBLE', message: 'The file is not shared.', help_id: 'drive-not-shared', docs_url: 'https://www.scriptivox.com/errors/drive-not-shared' } }));
+  const failed = await client.wait('w4').catch((e) => e);
+  assert.ok(failed instanceof TranscriptionFailedError);
+  assert.equal(failed.helpId, 'drive-not-shared');
+  assert.equal(failed.docsUrl, 'https://www.scriptivox.com/errors/drive-not-shared');
 });
 
 test('wait(): timeout throws WaitTimeoutError with the last status', async () => {
